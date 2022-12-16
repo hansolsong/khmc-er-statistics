@@ -1,0 +1,25 @@
+---
+title: "경희대학교병원 응급실 소아환자 내원 현황"
+format: html
+---
+
+```{r}
+#| echo: false
+#| output: false
+library(ggplot2)
+
+source("./dataset.R", encoding = "UTF-8")
+```
+
+## 개요
+- 조사기간: `r start_date` ~ `r end_date` (`r end_date - start_date + 1`일)
+- 내원 환자: `r nrow(raw_records)`명
+
+## Code Cell
+
+Here is a R code cell:
+
+```{r}
+
+patients_per_day <- raw_records %>% group_by(당직일) %>% summarise(n = n())
+```
