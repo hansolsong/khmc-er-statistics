@@ -1,0 +1,203 @@
+---
+title: "경희대학교병원 응급실 소아환자 내원 현황"
+format: html
+---
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(tidy = "styler")
+
+colors <- c("#3B6788")
+```
+
+
+```{r echo = FALSE, message = FALSE, warning = FALSE}
+library(ggplot2)
+library(psych)
+library(glue)
+library(viridis)
+library(flextable)
+
+source("./dataset.R", encoding = "UTF-8")
+source("./datetime.R", encoding = "UTF-8")
+source("./density.R", encoding = "UTF-8")
+```
+
+## 방법
+
+- 대상: `r start_date`부터 `r end_date`까지 경희대학교병원 응급실에 내원하여 소아청소년과 진료를 받은 환자
+- 각 환자의 내원 시각 및 재원 시간, 진료 결과를 분석하여 기간별, 요일별, 시간대별 내원 현황을 파악함
+- 시계열 분석은 조사기간 중 내원한 전체 환자를 대상으로 하였으며, 요일별, 시간대별 분포 등 추가 분석은 24시간 진료가 이루어졌던 기간인 `r analysis_start_date`부터 `r analysis_end_date`까지 내원한 환자를 대상으로 함
+  - 위 기간 중 24시간 진료가 이루어지지 않은 날과, 공휴일, 명절 등 통상과 다른 내원 양상을 보인 날은 제외함
+- 각 날짜의 내원 환자 수는 해당 날짜의 08:00으로부터 다음날 07:59까지 내원한 환자 수를 의미함
+
+## 결과
+
+### 환자군 통계
+
+```{r include = FALSE}
+durations <- all_records %>%
+  mutate(duration_min = as.numeric(체류시간, "minutes"), .keep = "none")
+desc_durations <- describe(durations)
+
+per_ktas <- all_records %>%
+  group_by(ktas = Triage..KTAS.) %>%
+  summarise(n = n())
+```
+
+- 총 내원 환자 수 (n): `r nrow(all_records)`명
+  - KTAS 분류별: `r glue("{per_ktas$ktas}({per_ktas$n})") %>% knitr::combine_words(and = "")`
+- 재원 시간 중앙값: `r desc_durations$med`분 (범위: `r desc_durations$min`-`r desc_durations$max`분, 평균 [SD]: `r round(desc_durations$mean, 1)` [`r round(desc_durations$sd, 1)`]분)
+
+
+### 시계열 분석
+
+```{r echo = FALSE}
+weekly <- all_records %>%
+  group_by(epiweek(당직일)) %>%
+  summarise(n = n()) %>%
+  mutate(week_start = first_day_of_week(`epiweek(당직일)`, 2022) %>%
+    as.Date(tz = "Asia/Seoul"))
+```
+
+```{r echo = FALSE, message = FALSE, results = "asis"}
+desc <- describe(weekly$n)
+cat(glue(
+  "- Median weekly visits: {desc$med} (",
+  "range, {desc$min}-{desc$max}; ",
+  "mean [SD], {round(desc$mean, 1)} [{round(desc$sd, 1)}])\n"
+))
+```
+
+```{r echo = FALSE}
+ggplot(weekly, aes(x = week_start, y = n)) +
+  geom_point(alpha = .5, color = colors[1]) +
+  geom_line(alpha = .5, color = colors[1]) +
+  geom_smooth(
+    method = "loess",
+    formula = y ~ x,
+    se = FALSE,
+    color = colors[1]
+  ) +
+  theme_minimal(base_family = "Apple SD Gothic Neo") +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  ) +
+  scale_x_date(date_labels = "%Y-%m", date_breaks = "1 month") +
+  ylim(0, NA) +
+  labs(x = "기간", y = "주당 내원 환자 수")
+```
+
+### 요일별, 시간대별 분포
+```{r echo = FALSE}
+visit_pattern <- records %>%
+  mutate(
+    내원일시 = 내원일시,
+    당직일 = 당직일,
+    visit_hour = interval(당직일, 내원일시) / hours(1),
+    wday = factor(wday(당직일)),
+    hour_group = cut(visit_hour, breaks = c(8, 18, 24, 32), right = TRUE),
+    .keep = "none"
+  )
+```
+
+```{r echo = FALSE, message = FALSE}
+# 요일별 시간대별 내원 환자 수
+visit_pattern_table_data <- visit_pattern %>%
+  group_by(당직일, hour_group) %>%
+  summarise(n = n()) %>%
+  pivot_wider(names_from = hour_group, values_from = n, values_fill = 0) %>%
+  group_by(wday(당직일)) %>%
+  summarise(
+    n_workday = n(),
+    n_daytime = sum(`(8,18]`),
+    n_evening = sum(`(18,24]`),
+    n_night = sum(`(24,32]`)
+  ) %>%
+  mutate(
+    n_daily_total = n_daytime + n_evening + n_night,
+    n_daytime_avg = glue(
+      "{round(n_daytime / n_workday, 2)}",
+      " ({scales::percent(n_daytime / n_daily_total)})"
+    ),
+    n_evening_avg = glue(
+      "{round(n_evening / n_workday, 2)}",
+      " ({scales::percent(n_evening / n_daily_total)})"
+    ),
+    n_night_avg = glue(
+      "{round(n_night / n_workday, 2)}",
+      " ({scales::percent(n_night / n_daily_total)})"
+    ),
+    n_total_avg = round(n_daily_total / n_workday, 2),
+  ) %>%
+  select(-n_daytime, -n_evening, -n_night, -n_daily_total)
+
+visit_pattern_table <- flextable(visit_pattern_table_data) %>%
+  set_table_properties(
+    align = "left"
+  ) %>%
+  add_header_row(
+    top = TRUE,
+    values = c("요일", "진료일", "일 평균 내원 환자 수 / 시간대별 분율", "", "", "")
+  ) %>%
+  set_header_labels(
+    "wday(당직일)" = "",
+    "n_workday" = "",
+    "n_daytime_avg" = "08-18시",
+    "n_evening_avg" = "18-24시",
+    "n_night_avg" = "24-08시",
+    "n_total_avg" = "일 평균"
+  ) %>%
+  merge_at(i = 1, j = 3:6, part = "header") %>%
+  autofit()
+
+visit_pattern_table
+```
+
+<br />
+
+```{r echo = FALSE}
+# stripchart
+ggplot(visit_pattern, aes(x = wday, y = visit_hour)) +
+  geom_point(size = 1, position = position_jitter(0.2), color = colors[1]) +
+  scale_x_discrete(
+    breaks = 1:7,
+    labels = c("일", "월", "화", "수", "목", "금", "토"),
+    limits = rev
+  ) +
+  scale_y_continuous(breaks = seq(8, 32, by = 2)) +
+  theme_minimal(base_family = "Apple SD Gothic Neo") +
+  theme(
+    axis.title.x = element_text(margin = margin(t = 10)),
+    axis.title.y = element_text(margin = margin(r = 10))
+  ) +
+  labs(x = "요일", y = "시각", caption = "*24-32: 익일 0-8시") +
+  coord_flip()
+```
+
+### 내원시각 누적분포도
+
+```{r echo = FALSE}
+ggplot(visit_pattern, aes(x = visit_hour, col = wday)) +
+  stat_ecdf() +
+  scale_x_continuous(breaks = seq(8, 32, by = 2)) +
+  scale_color_discrete(labels = c("일", "월", "화", "수", "목", "금", "토")) +
+  theme_minimal(base_family = "Apple SD Gothic Neo") +
+  labs(x = "시각 (시)", y = "내원환자 분율", caption = "*24-32: 익일 0-8시")
+```
+
+### 시간대별 평균 재원환자 수
+
+```{r echo = FALSE}
+pivoted_density <- pivot_longer(patient_density, cols = 2:25) %>%
+  mutate(hour = substring(name, 2) %>% as.integer() + 7)
+
+ggplot(pivoted_density, aes(x = weekday, y = hour, fill = value)) +
+  geom_tile() +
+  scale_x_discrete(
+    limits = c("일", "월", "화", "수", "목", "금", "토"),
+  ) +
+  scale_y_continuous(breaks = seq(8, 32, by = 2)) +
+  scale_fill_viridis(name = "평균 재원환자 수", option = "inferno") +
+  theme_minimal(base_family = "Apple SD Gothic Neo") +
+  labs(x = "요일", y = "시간대", caption = "*24-32: 익일 0-8시")
+```
